@@ -89,6 +89,93 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
 }
 
 
+#define STRIDE (64)
+#define N_TH (1)
+
+
+bool
+__get_next(size_t &qp,
+	   SlidingQueue<NodeID> &queue,
+	   SlidingQueue<NodeID>::iterator &q_iter,
+	   SlidingQueue<NodeID>::iterator &q_iter_end,
+	   int stride)
+{
+  size_t old_qp = fetch_and_add(qp, stride);
+  size_t new_qp = old_qp + stride;
+  if (old_qp < queue.size()) {
+    q_iter = queue.begin() + old_qp;
+    q_iter_end = (new_qp >= queue.size()) ? queue.end() : queue.begin() + new_qp;
+    return true;
+  } else {
+    q_iter = queue.end();
+    q_iter_end = queue.end();
+    return false;
+  }
+}
+
+inline bool get_next(size_t &qp,
+		     SlidingQueue<NodeID> &queue,
+		     SlidingQueue<NodeID>::iterator &q_iter,
+		     SlidingQueue<NodeID>::iterator &q_iter_end)
+{
+  return __get_next(qp, queue, q_iter, q_iter_end, STRIDE);
+}
+
+struct arg_t {
+  const Graph *g;
+  pvector<NodeID> *parent;
+  SlidingQueue<NodeID> *queue;
+  size_t *qp;
+  int64_t *scout_count;
+};
+
+void
+thread_func(arg_t *arg)
+{
+  SlidingQueue<NodeID>::iterator q_iter;
+  SlidingQueue<NodeID>::iterator q_iter_end;
+  QueueBuffer<NodeID> lqueue(*arg->queue);
+  int64_t local_scout_count = 0;
+  while (get_next(*arg->qp, *arg->queue, q_iter, q_iter_end)) {
+    while (q_iter < q_iter_end) {
+      NodeID u = *q_iter++;
+      for (NodeID v : arg->g->out_neigh(u)) {
+	NodeID curr_val = (*arg->parent)[v];
+	if (curr_val < 0) {
+	  if (compare_and_swap((*arg->parent)[v], curr_val, u)) {
+	    lqueue.push_back(v);
+	    local_scout_count += -curr_val;
+	  }
+	}
+      }
+    }
+  }
+  lqueue.flush();
+  fetch_and_add(*arg->scout_count, local_scout_count);
+}
+
+int64_t TDStep_pthread(const Graph &g, pvector<NodeID> &parent,
+		       SlidingQueue<NodeID> &queue) {
+  int64_t scout_count = 0;
+  size_t qp = 0;
+  pthread_t pth[N_TH];
+  arg_t arg[N_TH];
+  for (int i=0; i<N_TH; i++) {
+    arg[i].g = &g;
+    arg[i].parent = &parent;
+    arg[i].queue = &queue;
+    arg[i].qp = &qp;
+    arg[i].scout_count = &scout_count;
+    //pthread_setname_np(pth[i], "worker");
+    pthread_create(&pth[i], NULL, (void * (*)(void *))thread_func, &arg[i]);
+  }
+  for (int i=0; i<N_TH; i++) {
+    pthread_join(pth[i], NULL);
+  }  
+  return scout_count;
+}
+
+
 void QueueToBitmap(const SlidingQueue<NodeID> &queue, Bitmap &bm) {
   #pragma omp parallel for
   for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
@@ -138,7 +225,8 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   int64_t edges_to_check = g.num_edges_directed();
   int64_t scout_count = g.out_degree(source);
   while (!queue.empty()) {
-    if (scout_count > edges_to_check / alpha) {
+    //if (scout_count > edges_to_check / alpha) {
+    if (0) {
       int64_t awake_count, old_awake_count;
       TIME_OP(t, QueueToBitmap(queue, front));
       PrintStep("e", t.Seconds());
@@ -159,7 +247,8 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
     } else {
       t.Start();
       edges_to_check -= scout_count;
-      scout_count = TDStep(g, parent, queue);
+      //scout_count = TDStep(g, parent, queue);
+      scout_count = TDStep_pthread(g, parent, queue);
       queue.slide_window();
       t.Stop();
       PrintStep("td", t.Seconds(), queue.size());
