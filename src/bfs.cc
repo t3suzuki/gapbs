@@ -72,7 +72,7 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
   #pragma omp parallel
   {
     QueueBuffer<NodeID> lqueue(queue);
-    #pragma omp for reduction(+ : scout_count) nowait
+    #pragma omp for reduction(+ : scout_count) nowait schedule(dynamic, 64)
     for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
       NodeID u = *q_iter;
       for (NodeID v : g.out_neigh(u)) {
@@ -91,8 +91,8 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
 }
 
 
-#define STRIDE (64)
-#define N_TH (1)
+#define STRIDE (1024)
+#define N_TH (4)
 
 
 bool
@@ -129,6 +129,8 @@ struct arg_t {
   SlidingQueue<NodeID> *queue;
   size_t *qp;
   int64_t *scout_count;
+  SlidingQueue<NodeID>::iterator q_iter;
+  SlidingQueue<NodeID>::iterator q_iter_end;
 };
 
 void
@@ -152,8 +154,8 @@ thread_func(arg_t *arg)
       }
     }
   }
-  lqueue.flush();
   fetch_and_add(*arg->scout_count, local_scout_count);
+  lqueue.flush();
 }
 
 int64_t TDStep_pthread(const Graph &g, pvector<NodeID> &parent,
@@ -170,6 +172,60 @@ int64_t TDStep_pthread(const Graph &g, pvector<NodeID> &parent,
     arg[i].scout_count = &scout_count;
     //pthread_setname_np(pth[i], "worker");
     pthread_create(&pth[i], NULL, (void * (*)(void *))thread_func, &arg[i]);
+  }
+  for (int i=0; i<N_TH; i++) {
+    pthread_join(pth[i], NULL);
+  }  
+  return scout_count;
+}
+
+
+void
+thread_func2(arg_t *arg)
+{
+  QueueBuffer<NodeID> lqueue(*(arg->queue));
+  const Graph *pg = arg->g;
+  pvector<NodeID> *pparent = arg->parent;
+  int64_t local_scout_count = 0;
+  SlidingQueue<NodeID>::iterator iter_start = arg->q_iter;
+  SlidingQueue<NodeID>::iterator iter_end = arg->q_iter_end;
+
+  for (auto q_iter = iter_start; q_iter < iter_end; q_iter++) {
+    NodeID u = *q_iter;
+    for (NodeID v : pg->out_neigh(u)) {
+      NodeID curr_val = (*pparent)[v];
+      if (curr_val < 0) {
+        if (compare_and_swap((*pparent)[v], curr_val, u)) {
+          lqueue.push_back(v);
+          local_scout_count += -curr_val;
+        }
+      }
+    }
+  }
+  //printf("queue sz %lu\n", lqueue.tmp_size());
+  fetch_and_add(*arg->scout_count, local_scout_count);
+  lqueue.flush();
+}
+
+int64_t TDStep_pthread2(const Graph &g, pvector<NodeID> &parent,
+			SlidingQueue<NodeID> &queue) {
+  int64_t scout_count = 0;
+  pthread_t pth[N_TH];
+  arg_t arg[N_TH];
+
+  int stride = queue.size() / N_TH;
+  for (int tid=0; tid<N_TH; tid++) {
+    arg[tid].q_iter = queue.begin() + stride * tid;
+    arg[tid].q_iter_end = queue.begin() + stride * (tid + 1);
+  }
+  arg[N_TH-1].q_iter_end = queue.end();
+
+  for (int i=0; i<N_TH; i++) {
+    arg[i].g = &g;
+    arg[i].parent = &parent;
+    arg[i].queue = &queue;
+    arg[i].scout_count = &scout_count;
+    pthread_create(&pth[i], NULL, (void * (*)(void *))thread_func2, &arg[i]);
   }
   for (int i=0; i<N_TH; i++) {
     pthread_join(pth[i], NULL);
