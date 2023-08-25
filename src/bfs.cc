@@ -4,6 +4,8 @@
 #include <iostream>
 #include <vector>
 
+#include <signal.h>
+
 #include "benchmark.h"
 #include "bitmap.h"
 #include "builder.h"
@@ -206,7 +208,7 @@ pvector<NodeID> InitParent(const Graph &g) {
   return parent;
 }
 
-pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
+pvector<NodeID> __DOBFS(const Graph &g, NodeID source, int alpha = 15,
                       int beta = 18) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
@@ -259,6 +261,34 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
     if (parent[n] < -1)
       parent[n] = -1;
   return parent;
+}
+
+
+pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
+                      int beta = 18) {
+#if 0
+  int pid= getpid();
+  int cpid = fork();
+  if( cpid == 0) {
+    // child process .  Run your perf stat
+    char buf[256];
+    //sprintf(buf, "sudo perf stat -ddd -C 0-9 -p %d > stat.log 2>&1", pid);
+    //sprintf(buf, "sudo perf stat -ddd -C 0-9 -p %d", pid);
+    //sprintf(buf, "sudo perf stat -e mem_load_retired.local_pmm -e LLC-loads -e LLC-load-misses -e L1-dcache-loads -e L1-dcache-load-misses -e cycles -e instructions -e dTLB-loads -e dTLB-load-misses -C 16-31 -p %d", pid);
+    sprintf(buf, "sudo perf record -ag");
+    execl("/bin/sh", "sh", "-c", buf, NULL);
+    while (1);
+  } else {
+    setpgid(cpid, 0);
+    sleep(1);
+    pvector<NodeID> ret = __DOBFS(g, source, alpha, beta);
+    kill(-cpid, SIGINT);
+    sleep(1);
+    return ret;
+  }
+#else
+  return __DOBFS(g, source, alpha, beta);
+#endif
 }
 
 
