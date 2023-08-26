@@ -42,6 +42,17 @@ them in parent array as negative numbers. Thus the encoding of parent is:
     November 2012.
 */
 
+#define STRIDE (64)
+#define N_TH (10)
+#define ABT (1)
+
+#if ABT
+#include <abt.h>
+#define ABT_N_TH (16*N_TH)
+static ABT_xstream abt_xstreams[N_TH];
+static ABT_thread abt_threads[ABT_N_TH];
+static ABT_pool abt_pools[N_TH];
+#endif
 
 using namespace std;
 
@@ -91,8 +102,6 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
 }
 
 
-#define STRIDE (1024)
-#define N_TH (4)
 
 
 bool
@@ -124,6 +133,7 @@ inline bool get_next(size_t &qp,
 }
 
 struct arg_t {
+  int id;
   const Graph *g;
   pvector<NodeID> *parent;
   SlidingQueue<NodeID> *queue;
@@ -165,6 +175,7 @@ int64_t TDStep_pthread(const Graph &g, pvector<NodeID> &parent,
   pthread_t pth[N_TH];
   arg_t arg[N_TH];
   for (int i=0; i<N_TH; i++) {
+    arg[i].id = i;
     arg[i].g = &g;
     arg[i].parent = &parent;
     arg[i].queue = &queue;
@@ -175,10 +186,42 @@ int64_t TDStep_pthread(const Graph &g, pvector<NodeID> &parent,
   }
   for (int i=0; i<N_TH; i++) {
     pthread_join(pth[i], NULL);
-  }  
+  }
   return scout_count;
 }
 
+
+#if ABT
+void
+my_join(void *abt_th)
+{
+  ABT_thread_free((ABT_thread *)abt_th);
+}
+
+int64_t TDStep_abt(const Graph &g, pvector<NodeID> &parent,
+		       SlidingQueue<NodeID> &queue) {
+  int64_t scout_count = 0;
+  size_t qp = 0;
+  arg_t arg[ABT_N_TH];
+  int i;
+  for (i=0; i<ABT_N_TH; i++) {
+    arg[i].id = i;
+    arg[i].g = &g;
+    arg[i].parent = &parent;
+    arg[i].queue = &queue;
+    arg[i].qp = &qp;
+    arg[i].scout_count = &scout_count;
+    ABT_thread_create(abt_pools[i % N_TH], (void (*)(void *))thread_func, &arg[i], ABT_THREAD_ATTR_NULL, &abt_threads[i]);
+  }
+  for (i=0; i<ABT_N_TH; i++) {
+    //ABT_thread_join(abt_threads[i]);
+    pthread_t pth_for_join;
+    pthread_create(&pth_for_join, NULL, (void *(*)(void *))my_join, &abt_threads[i]);
+    pthread_join(pth_for_join, NULL);
+  }
+  return scout_count;
+}
+#endif
 
 void
 thread_func2(arg_t *arg)
@@ -305,8 +348,15 @@ pvector<NodeID> __DOBFS(const Graph &g, NodeID source, int alpha = 15,
     } else {
       t.Start();
       edges_to_check -= scout_count;
-      //scout_count = TDStep(g, parent, queue);
+#if ABT
+      scout_count = TDStep_abt(g, parent, queue);
+#else
+#if defined _OPENMP
+      scout_count = TDStep(g, parent, queue);
+#else
       scout_count = TDStep_pthread(g, parent, queue);
+#endif
+#endif
       queue.slide_window();
       t.Stop();
       PrintStep("td", t.Seconds(), queue.size());
@@ -422,6 +472,17 @@ int main(int argc, char* argv[]) {
     return -1;
   Builder b(cli);
   Graph g = b.MakeGraph();
+
+#if ABT
+  int i;
+  printf("argobots!\n");
+  ABT_init(0, NULL);
+  for (i=0; i<N_TH; i++) {
+    ABT_xstream_create(ABT_SCHED_NULL, &abt_xstreams[i]);
+    ABT_xstream_get_main_pools(abt_xstreams[i], 1, &abt_pools[i]);
+  }
+#endif
+  
   SourcePicker<Graph> sp(g, cli.start_vertex());
   auto BFSBound = [&sp] (const Graph &g) { return DOBFS(g, sp.PickNext()); };
   SourcePicker<Graph> vsp(g, cli.start_vertex());

@@ -1,7 +1,12 @@
 # See LICENSE.txt for license details.
 
-CXX_FLAGS += -std=c++11 -O3 -Wall
-PAR_FLAG = -fopenmp
+
+ABT_PATH = $(HOME)/argobots/install
+#CXX = clang++
+CXX_FLAGS += -std=c++11 -O3 -Wall -g
+#PAR_FLAG = -fopenmp
+CXX_FLAGS += -I$(ABT_PATH)/include
+LD_FLAGS += -L$(ABT_PATH)/lib -labt
 
 ifneq (,$(findstring icpc,$(CXX)))
 	PAR_FLAG = -openmp
@@ -23,7 +28,7 @@ SUITE = $(KERNELS) converter
 all: $(SUITE)
 
 % : src/%.cc src/*.h
-	$(CXX) $(CXX_FLAGS) $< -o $@
+	$(CXX) $(CXX_FLAGS) $< -o $@ $(LD_FLAGS)
 
 # Testing
 include test/test.mk
