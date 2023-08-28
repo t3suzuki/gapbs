@@ -15,7 +15,7 @@ Wrappers for compiler intrinsics for atomic memory operations (AMOs)
 */
 
 
-#if defined _OPENMP
+#if 1 //defined _OPENMP
 
   #if defined __GNUC__
 

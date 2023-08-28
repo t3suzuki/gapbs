@@ -42,15 +42,21 @@ them in parent array as negative numbers. Thus the encoding of parent is:
     November 2012.
 */
 
-#define STRIDE (64)
-#define N_TH (10)
 #define ABT (1)
+//#define PTH (1)
+
+#define STRIDE (128)
+#define N_TH (4)
+#define ULT_N_TH (128*N_TH)
+
+#if PTH
+#include <pth.h>
+#endif
 
 #if ABT
 #include <abt.h>
-#define ABT_N_TH (16*N_TH)
 static ABT_xstream abt_xstreams[N_TH];
-static ABT_thread abt_threads[ABT_N_TH];
+static ABT_thread abt_threads[ULT_N_TH];
 static ABT_pool abt_pools[N_TH];
 #endif
 
@@ -83,7 +89,7 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
   #pragma omp parallel
   {
     QueueBuffer<NodeID> lqueue(queue);
-    #pragma omp for reduction(+ : scout_count) nowait schedule(dynamic, 64)
+#pragma omp for reduction(+ : scout_count) nowait schedule(dynamic, 64)
     for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
       NodeID u = *q_iter;
       for (NodeID v : g.out_neigh(u)) {
@@ -141,6 +147,9 @@ struct arg_t {
   int64_t *scout_count;
   SlidingQueue<NodeID>::iterator q_iter;
   SlidingQueue<NodeID>::iterator q_iter_end;
+#if PTH
+  pth_t pthid;
+#endif
 };
 
 void
@@ -153,6 +162,10 @@ thread_func(arg_t *arg)
   while (get_next(*arg->qp, *arg->queue, q_iter, q_iter_end)) {
     while (q_iter < q_iter_end) {
       NodeID u = *q_iter++;
+#if 0
+      //ABT_thread_yield();
+      sched_yield();
+#endif
       for (NodeID v : arg->g->out_neigh(u)) {
 	NodeID curr_val = (*arg->parent)[v];
 	if (curr_val < 0) {
@@ -202,9 +215,9 @@ int64_t TDStep_abt(const Graph &g, pvector<NodeID> &parent,
 		       SlidingQueue<NodeID> &queue) {
   int64_t scout_count = 0;
   size_t qp = 0;
-  arg_t arg[ABT_N_TH];
+  arg_t arg[ULT_N_TH];
   int i;
-  for (i=0; i<ABT_N_TH; i++) {
+  for (i=0; i<ULT_N_TH; i++) {
     arg[i].id = i;
     arg[i].g = &g;
     arg[i].parent = &parent;
@@ -213,11 +226,35 @@ int64_t TDStep_abt(const Graph &g, pvector<NodeID> &parent,
     arg[i].scout_count = &scout_count;
     ABT_thread_create(abt_pools[i % N_TH], (void (*)(void *))thread_func, &arg[i], ABT_THREAD_ATTR_NULL, &abt_threads[i]);
   }
-  for (i=0; i<ABT_N_TH; i++) {
+  for (i=0; i<ULT_N_TH; i++) {
     //ABT_thread_join(abt_threads[i]);
     pthread_t pth_for_join;
     pthread_create(&pth_for_join, NULL, (void *(*)(void *))my_join, &abt_threads[i]);
     pthread_join(pth_for_join, NULL);
+  }
+  return scout_count;
+}
+#endif
+
+#if PTH
+int64_t TDStep_pth(const Graph &g, pvector<NodeID> &parent,
+		   SlidingQueue<NodeID> &queue) {
+  int64_t scout_count = 0;
+  size_t qp = 0;
+  arg_t arg[ULT_N_TH];
+  int i;
+  pth_attr_t attr = pth_attr_new();
+  for (i=0; i<ULT_N_TH; i++) {
+    arg[i].id = i;
+    arg[i].g = &g;
+    arg[i].parent = &parent;
+    arg[i].queue = &queue;
+    arg[i].qp = &qp;
+    arg[i].scout_count = &scout_count;
+    arg[i].pthid = pth_spawn(attr, (void *(*)(void *))thread_func, &arg[i]);
+  }
+  for (i=0; i<ULT_N_TH; i++) {
+    pth_join(arg[i].pthid, NULL);
   }
   return scout_count;
 }
@@ -232,7 +269,6 @@ thread_func2(arg_t *arg)
   int64_t local_scout_count = 0;
   SlidingQueue<NodeID>::iterator iter_start = arg->q_iter;
   SlidingQueue<NodeID>::iterator iter_end = arg->q_iter_end;
-
   for (auto q_iter = iter_start; q_iter < iter_end; q_iter++) {
     NodeID u = *q_iter;
     for (NodeID v : pg->out_neigh(u)) {
@@ -245,7 +281,6 @@ thread_func2(arg_t *arg)
       }
     }
   }
-  //printf("queue sz %lu\n", lqueue.tmp_size());
   fetch_and_add(*arg->scout_count, local_scout_count);
   lqueue.flush();
 }
@@ -350,6 +385,8 @@ pvector<NodeID> __DOBFS(const Graph &g, NodeID source, int alpha = 15,
       edges_to_check -= scout_count;
 #if ABT
       scout_count = TDStep_abt(g, parent, queue);
+#elif PTH
+      scout_count = TDStep_pth(g, parent, queue);
 #else
 #if defined _OPENMP
       scout_count = TDStep(g, parent, queue);
@@ -481,6 +518,10 @@ int main(int argc, char* argv[]) {
     ABT_xstream_create(ABT_SCHED_NULL, &abt_xstreams[i]);
     ABT_xstream_get_main_pools(abt_xstreams[i], 1, &abt_pools[i]);
   }
+#endif
+#if PTH
+  printf("GNU Pth\n");
+  pth_init();
 #endif
   
   SourcePicker<Graph> sp(g, cli.start_vertex());
