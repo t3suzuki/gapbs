@@ -5,7 +5,7 @@
 #define PVECTOR_H_
 
 #include <algorithm>
-
+#include "dax.h"
 
 /*
 GAP Benchmark Suite
@@ -27,7 +27,11 @@ class pvector {
   pvector() : start_(nullptr), end_size_(nullptr), end_capacity_(nullptr) {}
 
   explicit pvector(size_t num_elements) {
+#if DAX
+    start_ = (T_*) dax_malloc(num_elements * sizeof(T_));
+#else
     start_ = new T_[num_elements];
+#endif
     end_size_ = start_ + num_elements;
     end_capacity_ = end_size_;
   }
@@ -71,7 +75,7 @@ class pvector {
 
   void ReleaseResources(){
     if (start_ != nullptr) {
-      delete[] start_;
+      //delete[] start_;
     }
   }
 

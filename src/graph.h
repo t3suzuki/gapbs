@@ -12,6 +12,7 @@
 
 #include "pvector.h"
 #include "util.h"
+#include "dax.h"
 
 
 /*
@@ -120,7 +121,11 @@ class CSRGraph {
     if (out_index_ != nullptr)
       delete[] out_index_;
     if (out_neighbors_ != nullptr)
+#if DAX
+      //dax_free();
+#else
       delete[] out_neighbors_;
+#endif
     if (directed_) {
       if (in_index_ != nullptr)
         delete[] in_index_;
@@ -211,6 +216,36 @@ class CSRGraph {
     return in_index_[v+1] - in_index_[v];
   }
 
+  DestID_ * out_top(NodeID_ n) const {
+    return out_index_[n];
+  }
+  
+  inline char *align64(void *p) const {
+    return (char *)(((uint64_t)p / 64) * 64);
+  }
+
+  inline void out_prefetch(NodeID_ n) const {
+    char *p = align64(out_index_[n]);
+    __builtin_prefetch(p);
+    for (int i=1; i<8; i++) {
+      char *np = p + 64 * i;
+      if ((uint64_t)np > (uint64_t)out_index_[n+1])
+	break;
+      __builtin_prefetch(np);
+    }
+  }
+
+  inline void out_prefetch2(NodeID_ n) const {
+    char *p = align64(out_index_[n]);
+    __builtin_prefetch(p);
+    for (int i=1; i<3; i++) {
+      char *np = p + 64 * i;
+      if ((uint64_t)np >= (uint64_t)out_index_[n+1])
+	break;
+      __builtin_prefetch(np);
+    }
+  }
+  
   Neighborhood out_neigh(NodeID_ n, OffsetT start_offset = 0) const {
     return Neighborhood(n, out_index_, start_offset);
   }
@@ -241,7 +276,11 @@ class CSRGraph {
 
   static DestID_** GenIndex(const pvector<SGOffset> &offsets, DestID_* neighs) {
     NodeID_ length = offsets.size();
+#if 0 // DAX
+    DestID_** index = (DestID_ **)dax_malloc(sizeof(DestID_ *)*length);
+#else
     DestID_** index = new DestID_*[length];
+#endif
     #pragma omp parallel for
     for (NodeID_ n=0; n < length; n++)
       index[n] = neighs + offsets[n];

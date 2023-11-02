@@ -1,12 +1,15 @@
 # See LICENSE.txt for license details.
 
 
-ABT_PATH = $(HOME)/argobots/install
+MEMKIND_PATH = /home/tomoya-s/memkind/install
+ABT_PATH = /home/tomoya-s/argobots/install
 #CXX = clang++
 CXX_FLAGS += -std=c++11 -O3 -Wall -g
+CXX_FLAGS += -DDAX=1
+CXX_FLAGS += -DABT=1
 #PAR_FLAG = -fopenmp
-CXX_FLAGS += -I$(ABT_PATH)/include
-LD_FLAGS += -L$(ABT_PATH)/lib -labt
+CXX_FLAGS += -I$(ABT_PATH)/include -I$(MEMKIND_PATH)/include
+LD_FLAGS += -L$(ABT_PATH)/lib -labt -L$(MEMKIND_PATH)/lib -lmemkind
 
 ifneq (,$(findstring icpc,$(CXX)))
 	PAR_FLAG = -openmp

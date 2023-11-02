@@ -15,7 +15,7 @@
 #include "pvector.h"
 #include "sliding_queue.h"
 #include "timer.h"
-
+#include "dax.h"
 
 /*
 GAP Benchmark Suite
@@ -42,12 +42,11 @@ them in parent array as negative numbers. Thus the encoding of parent is:
     November 2012.
 */
 
-#define ABT (1)
 //#define PTH (1)
 
 #define STRIDE (128)
-#define N_TH (4)
-#define ULT_N_TH (128*N_TH)
+#define N_TH (8)
+#define ULT_N_TH (8*N_TH)
 
 #if PTH
 #include <pth.h>
@@ -152,6 +151,14 @@ struct arg_t {
 #endif
 };
 
+#define N_ENTRY (1024/ULT_N_TH)
+uint64_t mycache[ULT_N_TH][N_ENTRY];
+
+inline char *align(void *p, int sz)
+ {
+  return (char *)(((uint64_t)p / sz) * sz);
+}
+
 void
 thread_func(arg_t *arg)
 {
@@ -162,11 +169,34 @@ thread_func(arg_t *arg)
   while (get_next(*arg->qp, *arg->queue, q_iter, q_iter_end)) {
     while (q_iter < q_iter_end) {
       NodeID u = *q_iter++;
-#if 0
-      //ABT_thread_yield();
-      sched_yield();
+#if ABT
+      /*
+      void *p = arg->g->out_top(u);
+      __builtin_prefetch(p);
+      ABT_thread_yield();
+      */
+#define ALIGN (64)
+      if (0) {
+	char *p = align(arg->g->out_top(u), ALIGN);
+	int tid = arg->id;
+	int index = ((uint64_t)p / ALIGN) % N_ENTRY;
+	if (mycache[tid][index] != (uint64_t)p / ALIGN) {
+	  for (int i=0; i<ALIGN/64; i++) {
+	    char *np = p + 64 * i;
+	    __builtin_prefetch(np);
+	  }
+	  mycache[tid][index] = (uint64_t)p / ALIGN;
+	  ABT_thread_yield();
+	}
+      } else {
+	arg->g->out_prefetch2(u);
+	ABT_thread_yield();
+      }
 #endif
+
       for (NodeID v : arg->g->out_neigh(u)) {
+	__builtin_prefetch(&(*arg->parent)[v]);
+	ABT_thread_yield();
 	NodeID curr_val = (*arg->parent)[v];
 	if (curr_val < 0) {
 	  if (compare_and_swap((*arg->parent)[v], curr_val, u)) {
@@ -227,10 +257,7 @@ int64_t TDStep_abt(const Graph &g, pvector<NodeID> &parent,
     ABT_thread_create(abt_pools[i % N_TH], (void (*)(void *))thread_func, &arg[i], ABT_THREAD_ATTR_NULL, &abt_threads[i]);
   }
   for (i=0; i<ULT_N_TH; i++) {
-    //ABT_thread_join(abt_threads[i]);
-    pthread_t pth_for_join;
-    pthread_create(&pth_for_join, NULL, (void *(*)(void *))my_join, &abt_threads[i]);
-    pthread_join(pth_for_join, NULL);
+    ABT_thread_join(abt_threads[i]);
   }
   return scout_count;
 }
@@ -504,6 +531,9 @@ bool BFSVerifier(const Graph &g, NodeID source,
 
 
 int main(int argc, char* argv[]) {
+#if DAX
+  dax_init();
+#endif  
   CLApp cli(argc, argv, "breadth-first search");
   if (!cli.ParseArgs())
     return -1;
@@ -514,8 +544,12 @@ int main(int argc, char* argv[]) {
   int i;
   printf("argobots!\n");
   ABT_init(0, NULL);
-  for (i=0; i<N_TH; i++) {
+  ABT_xstream_self(&abt_xstreams[0]);
+  for (i=1; i<N_TH; i++) {
     ABT_xstream_create(ABT_SCHED_NULL, &abt_xstreams[i]);
+  }
+  for (i=0; i<N_TH; i++) {
+    ABT_xstream_set_cpubind(abt_xstreams[i], i);
     ABT_xstream_get_main_pools(abt_xstreams[i], 1, &abt_pools[i]);
   }
 #endif
@@ -523,7 +557,7 @@ int main(int argc, char* argv[]) {
   printf("GNU Pth\n");
   pth_init();
 #endif
-  
+
   SourcePicker<Graph> sp(g, cli.start_vertex());
   auto BFSBound = [&sp] (const Graph &g) { return DOBFS(g, sp.PickNext()); };
   SourcePicker<Graph> vsp(g, cli.start_vertex());
